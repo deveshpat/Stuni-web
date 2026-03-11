@@ -214,7 +214,6 @@ export default function Home() {
       appendLog("Step 1/4: Initializing WebLLM.");
       if (!llmRef.current) {
         const webllm = await import("@mlc-ai/web-llm");
-        let lastError: unknown = null;
         for (let i = 0; i < WEBLLM_MODELS.length; i += 1) {
           const model = WEBLLM_MODELS[i];
           appendLog(`WebLLM: loading model ${model}`);
@@ -229,7 +228,6 @@ export default function Home() {
             }
             break;
           } catch (error) {
-            lastError = error;
             const message = error instanceof Error ? error.message : "Unknown error.";
             if (
               i === WEBLLM_MODELS.length - 1 ||
@@ -241,9 +239,6 @@ export default function Home() {
               `WebLLM model ${model} failed due to memory limits (${message}). Retrying with a smaller model.`,
             );
           }
-        }
-        if (!llmRef.current && lastError) {
-          throw lastError;
         }
       } else {
         appendLog("WebLLM already initialized. Reusing loaded engine.");
