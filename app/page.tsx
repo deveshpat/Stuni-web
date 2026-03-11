@@ -14,8 +14,8 @@ type GeneratedAudio = {
 };
 
 const DEFAULT_PROMPT =
-  "Explain how photosynthesis works in a simple, student-friendly way.";
-const WEBLLM_MODEL = "Phi-3-mini-4k-instruct-q4f16_1-MLC";
+  "Accelerators in India";
+const WEBLLM_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
 const SPEECH_MODEL = "Xenova/speecht5_tts";
 const SPEAKER_EMBEDDINGS_URL =
   "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin";
