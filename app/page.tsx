@@ -435,7 +435,7 @@ Topic: ${prompt}`;
               <p className="text-slate-400">Logs will appear here during generation.</p>
             ) : (
               logs.map((line, idx) => (
-                <p key={`${line}-${idx}`} className="text-emerald-300">
+                <p key={idx} className="text-emerald-300">
                   {line}
                 </p>
               ))
