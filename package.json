@@ -13,7 +13,7 @@
     "@ffmpeg/util": "^0.12.2",
     "@mlc-ai/web-llm": "^0.2.81",
     "@xenova/transformers": "^2.17.2",
-    "next": "14.2.12",
+    "next": "^15.5.10",
     "react": "^18",
     "react-dom": "^18"
   },
@@ -22,7 +22,7 @@
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "eslint": "^8",
-    "eslint-config-next": "14.2.12",
+    "eslint-config-next": "^15.5.10",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"
