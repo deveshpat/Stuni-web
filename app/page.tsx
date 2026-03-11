@@ -15,7 +15,10 @@ type GeneratedAudio = {
 
 const DEFAULT_PROMPT =
   "Accelerators in India";
-const WEBLLM_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
+const WEBLLM_MODELS = [
+  "Llama-3.2-1B-Instruct-q4f16_1-MLC",
+  "SmolLM2-360M-Instruct-q4f16_1-MLC",
+] as const;
 const SPEECH_MODEL = "Xenova/speecht5_tts";
 const SPEAKER_EMBEDDINGS_URL =
   "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin";
@@ -165,6 +168,15 @@ async function getAudioDuration(blob: Blob): Promise<number> {
   }
 }
 
+function isLikelyWebLLMMemoryError(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("array buffer allocation failed") ||
+    normalized.includes("out of memory") ||
+    normalized.includes("insufficient memory")
+  );
+}
+
 export default function Home() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -202,11 +214,37 @@ export default function Home() {
       appendLog("Step 1/4: Initializing WebLLM.");
       if (!llmRef.current) {
         const webllm = await import("@mlc-ai/web-llm");
-        llmRef.current = await webllm.CreateMLCEngine(WEBLLM_MODEL, {
-          initProgressCallback: (report) => {
-            appendLog(`WebLLM: ${report.text}`);
-          },
-        });
+        let lastError: unknown = null;
+        for (let i = 0; i < WEBLLM_MODELS.length; i += 1) {
+          const model = WEBLLM_MODELS[i];
+          appendLog(`WebLLM: loading model ${model}`);
+          try {
+            llmRef.current = await webllm.CreateMLCEngine(model, {
+              initProgressCallback: (report) => {
+                appendLog(`WebLLM: ${report.text}`);
+              },
+            });
+            if (i > 0) {
+              appendLog(`WebLLM: switched to lower-memory fallback model ${model}.`);
+            }
+            break;
+          } catch (error) {
+            lastError = error;
+            const message = error instanceof Error ? error.message : "Unknown error.";
+            if (
+              i === WEBLLM_MODELS.length - 1 ||
+              !isLikelyWebLLMMemoryError(message)
+            ) {
+              throw error;
+            }
+            appendLog(
+              `WebLLM model ${model} failed due to memory limits (${message}). Retrying with a smaller model.`,
+            );
+          }
+        }
+        if (!llmRef.current && lastError) {
+          throw lastError;
+        }
       } else {
         appendLog("WebLLM already initialized. Reusing loaded engine.");
       }

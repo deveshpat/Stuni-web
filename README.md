@@ -6,7 +6,8 @@ No backend is required for the V1 prototype pipeline.
 ## V1 pipeline
 
 1. **WebLLM (`@mlc-ai/web-llm`)**
-   - Loads `Phi-3-mini-4k-instruct-q4f16_1-MLC`
+   - Loads `Llama-3.2-1B-Instruct-q4f16_1-MLC` by default
+   - Falls back to `SmolLM2-360M-Instruct-q4f16_1-MLC` when browser memory is constrained
    - Generates a strict JSON slide script:
    - `[{"spoken_text":"...","slide_heading":"...","slide_bullet":"..."}]`
 2. **Canvas rendering**
