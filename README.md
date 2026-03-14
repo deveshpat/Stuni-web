@@ -38,9 +38,14 @@ Create a local environment file at `.env.local` in the project root:
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-REPLACE_ME
 # Optional:
-# OPENROUTER_MODEL=openai/gpt-4o-mini
+# OPENROUTER_MODEL=openrouter/free
 # OPENROUTER_APP_TITLE=stuni-web
 ```
+
+By default, this app uses `openrouter/free` (Free Models Router).  
+If you want a specific free model, set `OPENROUTER_MODEL` to a `:free` variant (for example `meta-llama/llama-3.2-3b-instruct:free`).
+If you set a paid model ID instead, OpenRouter may bill that request according to your account settings.
+See OpenRouter’s free model list: https://openrouter.ai/models?pricing=free
 
 Open http://localhost:3000
 

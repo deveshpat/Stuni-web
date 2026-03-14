@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL = "openai/gpt-4o-mini";
+const DEFAULT_MODEL = "openrouter/free";
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.OPENROUTER_API_KEY;
