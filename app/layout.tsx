@@ -15,7 +15,7 @@ const geistMono = localFont({
 
 export const metadata: Metadata = {
   title: "stuni-web",
-  description: "Local in-browser AI explainer video generator",
+  description: "AI explainer video generator with OpenRouter + local browser rendering",
 };
 
 export default function RootLayout({

@@ -1,13 +1,13 @@
 # stuni-web (V1)
 
-stuni-web is a local-first, in-browser AI explainer video generator built with Next.js.
-No backend is required for the V1 prototype pipeline.
+stuni-web is an AI explainer video generator built with Next.js.
+Script generation now uses OpenRouter on the server, while rendering and TTS remain local in the browser.
 
 ## V1 pipeline
 
-1. **WebLLM (`@mlc-ai/web-llm`)**
-   - Loads `Llama-3.2-1B-Instruct-q4f16_1-MLC` by default
-   - Falls back to `SmolLM2-360M-Instruct-q4f16_1-MLC` when browser memory is constrained
+1. **OpenRouter API (server-side route)**
+   - Calls `https://openrouter.ai/api/v1/chat/completions`
+   - Uses `OPENROUTER_API_KEY` from server environment variables only
    - Generates a strict JSON slide script:
    - `[{"spoken_text":"...","slide_heading":"...","slide_bullet":"..."}]`
 2. **Canvas rendering**
@@ -33,9 +33,26 @@ npm install
 npm run dev
 ```
 
+Create a local environment file at `/home/runner/work/Stuni-web/Stuni-web/.env.local`:
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-REPLACE_ME
+# Optional:
+# OPENROUTER_MODEL=openai/gpt-4o-mini
+# OPENROUTER_APP_TITLE=stuni-web
+```
+
 Open http://localhost:3000
+
+## Keeping the API key private on GitHub
+
+- Never commit real keys to the repository.
+- Keep local keys only in `.env.local` (already ignored by `.gitignore`).
+- For GitHub Actions, store the key in **Repository Settings → Secrets and variables → Actions → New repository secret** (name it `OPENROUTER_API_KEY`).
+- For deployments (for example Vercel), add `OPENROUTER_API_KEY` in deployment environment variables, not in code.
+- If a key is ever pasted in chat/commits/issues, rotate/revoke it immediately in OpenRouter.
 
 ## Notes
 
-- This is a browser-heavy demo and depends on user device capabilities (WebGPU/WebAssembly).
-- First run can take significant time because models and wasm assets must load.
+- This is still a browser-heavy demo because rendering and TTS run on user hardware (WebAssembly/WebAudio).
+- First run can take significant time because TTS/wasm assets must load.
