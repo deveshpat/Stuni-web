@@ -27,21 +27,29 @@ export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin") || "http://localhost:3000";
   const appTitle = process.env.OPENROUTER_APP_TITLE || "stuni-web";
 
-  const openRouterResponse = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": origin,
-      "X-Title": appTitle,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.2,
-      max_tokens: 800,
-    }),
-  });
+  let openRouterResponse: Response;
+  try {
+    openRouterResponse = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": origin,
+        "X-Title": appTitle,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.2,
+        max_tokens: 800,
+      }),
+    });
+  } catch {
+    return NextResponse.json(
+      { error: "OpenRouter request failed due to a network error." },
+      { status: 502 },
+    );
+  }
 
   if (!openRouterResponse.ok) {
     const failureBody = await openRouterResponse.text();

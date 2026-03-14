@@ -33,7 +33,7 @@ npm install
 npm run dev
 ```
 
-Create a local environment file at `/home/runner/work/Stuni-web/Stuni-web/.env.local`:
+Create a local environment file at `.env.local` in the project root:
 
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-REPLACE_ME
