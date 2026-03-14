@@ -1,7 +1,7 @@
 # stuni-web (V1)
 
 stuni-web is an AI explainer video generator built with Next.js.
-Script generation now uses OpenRouter on the server, while rendering and TTS remain local in the browser.
+Script generation uses OpenRouter on the server, and audio generation can use either a remote API (default, low-memory) or local browser TTS.
 
 ## V1 pipeline
 
@@ -13,9 +13,10 @@ Script generation now uses OpenRouter on the server, while rendering and TTS rem
 2. **Canvas rendering**
    - Draws each slide to a hidden `1920x1080` canvas
    - Exports `slide_X.png` blobs
-3. **Transformers.js TTS (`@xenova/transformers`)**
-   - Uses `Xenova/speecht5_tts` to generate narration per slide
-   - Exports `audio_X.wav` blobs and calculates exact durations
+3. **Audio generation (remote-first with local fallback)**
+   - Default: server-side OpenAI-compatible `/api/tts` route (configured for OpenRouter-compatible base URL)
+   - Fallback/local mode: Transformers.js TTS in browser (`NEXT_PUBLIC_LOCAL_TTS_MODEL`, default `Xenova/mms-tts-eng`)
+   - Exports narration blobs and calculates exact durations
 4. **FFmpeg.wasm (`@ffmpeg/ffmpeg`, `@ffmpeg/util`)**
    - Loops each slide image to its narration duration
    - Produces segment videos and concatenates into `stuni_explainer.mp4`
@@ -33,13 +34,25 @@ npm install
 npm run dev
 ```
 
-Create a local environment file at `.env.local` in the project root:
+Create/update environment file at `.env` (or `.env.local`) in the project root:
 
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-REPLACE_ME
-# Optional:
-# OPENROUTER_MODEL=openrouter/free
-# OPENROUTER_APP_TITLE=stuni-web
+OPENROUTER_MODEL=openrouter/free
+OPENROUTER_APP_TITLE=stuni-web
+
+# Audio mode: remote (recommended on low-memory machines/codespaces) or local
+NEXT_PUBLIC_AUDIO_PROVIDER=remote
+
+# OpenAI-compatible TTS configuration (can point to OpenRouter or another compatible API)
+# If TTS_API_KEY is empty, OPENROUTER_API_KEY is used.
+TTS_API_KEY=
+TTS_API_BASE_URL=https://openrouter.ai/api/v1
+TTS_MODEL=openai/gpt-4o-mini-tts
+TTS_VOICE=alloy
+
+# Local fallback model
+NEXT_PUBLIC_LOCAL_TTS_MODEL=Xenova/mms-tts-eng
 ```
 
 By default, this app uses `openrouter/free` (Free Models Router).  

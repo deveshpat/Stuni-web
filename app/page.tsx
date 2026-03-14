@@ -15,7 +15,9 @@ type GeneratedAudio = {
 
 const DEFAULT_PROMPT =
   "Accelerators in India";
-const SPEECH_MODEL = "Xenova/speecht5_tts";
+const AUDIO_PROVIDER = process.env.NEXT_PUBLIC_AUDIO_PROVIDER || "remote";
+const LOCAL_TTS_MODEL =
+  process.env.NEXT_PUBLIC_LOCAL_TTS_MODEL || "Xenova/mms-tts-eng";
 const SPEAKER_EMBEDDINGS_URL =
   "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin";
 
@@ -239,46 +241,94 @@ Topic: ${prompt}`;
       }
 
       setStatus("Generating Audio");
-      appendLog("Step 3/4: Initializing local TTS.");
-      if (!ttsRef.current) {
-        const { pipeline } = await import("@xenova/transformers");
-        ttsRef.current = await pipeline("text-to-speech", SPEECH_MODEL, {
-          progress_callback: (info: { status?: string; file?: string }) => {
-            appendLog(
-              `TTS: ${info.status ?? "loading"}${info.file ? ` (${info.file})` : ""}`,
-            );
-          },
-        });
-      } else {
-        appendLog("TTS pipeline already initialized. Reusing loaded model.");
-      }
-
-      if (!speakerEmbeddingsRef.current) {
-        appendLog("Downloading speaker embeddings for SpeechT5.");
-        const speakerBuffer = await fetch(SPEAKER_EMBEDDINGS_URL).then((res) =>
-          res.arrayBuffer(),
-        );
-        speakerEmbeddingsRef.current = new Float32Array(speakerBuffer);
-      }
-
       const audioFiles: GeneratedAudio[] = [];
-      for (let i = 0; i < slides.length; i += 1) {
-        const output = await (
-          ttsRef.current as (
-            text: string,
-            options: { speaker_embeddings: Float32Array },
-          ) => Promise<{ audio: Float32Array; sampling_rate: number }>
-        )(slides[i].spoken_text, {
-          speaker_embeddings: speakerEmbeddingsRef.current,
-        });
+      let usedRemoteAudio = false;
 
-        const wavData = float32ToWav(output.audio, output.sampling_rate);
-        const wavBytes = new Uint8Array(wavData.byteLength);
-        wavBytes.set(wavData);
-        const wavBlob = new Blob([wavBytes.buffer], { type: "audio/wav" });
-        const durationSec = await getAudioDuration(wavBlob);
-        audioFiles.push({ blob: wavBlob, durationSec });
-        appendLog(`Generated audio_${i + 1}.wav (${durationSec.toFixed(2)}s)`);
+      if (AUDIO_PROVIDER === "remote") {
+        appendLog("Step 3/4: Generating audio via remote API.");
+        try {
+          for (let i = 0; i < slides.length; i += 1) {
+            const ttsResponse = await fetch("/api/tts", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ text: slides[i].spoken_text }),
+            });
+            if (!ttsResponse.ok) {
+              const responseBody = (await ttsResponse.json().catch(() => ({}))) as {
+                error?: string;
+              };
+              throw new Error(responseBody.error ?? "Failed to generate remote audio.");
+            }
+
+            const remoteBlob = await ttsResponse.blob();
+            const durationSec = await getAudioDuration(remoteBlob);
+            audioFiles.push({ blob: remoteBlob, durationSec });
+            appendLog(
+              `Generated audio_${i + 1}.mp3 via API (${durationSec.toFixed(2)}s)`,
+            );
+          }
+          usedRemoteAudio = true;
+        } catch (remoteError) {
+          const message =
+            remoteError instanceof Error ? remoteError.message : "Unknown error.";
+          appendLog(`Remote audio failed: ${message}`);
+          appendLog("Falling back to local Transformers.js TTS.");
+        }
+      }
+
+      if (!usedRemoteAudio) {
+        appendLog(
+          `Step 3/4: Initializing local TTS model (${LOCAL_TTS_MODEL}) for fallback.`,
+        );
+        if (!ttsRef.current) {
+          const { pipeline } = await import("@xenova/transformers");
+          ttsRef.current = await pipeline("text-to-speech", LOCAL_TTS_MODEL, {
+            progress_callback: (info: { status?: string; file?: string }) => {
+              appendLog(
+                `TTS: ${info.status ?? "loading"}${info.file ? ` (${info.file})` : ""}`,
+              );
+            },
+          });
+        } else {
+          appendLog("TTS pipeline already initialized. Reusing loaded model.");
+        }
+
+        const requiresSpeakerEmbeddings = /speecht5/i.test(LOCAL_TTS_MODEL);
+        if (requiresSpeakerEmbeddings && !speakerEmbeddingsRef.current) {
+          appendLog("Downloading speaker embeddings for SpeechT5.");
+          const speakerRes = await fetch(SPEAKER_EMBEDDINGS_URL);
+          if (!speakerRes.ok) {
+            throw new Error("Failed to fetch SpeechT5 speaker embeddings.");
+          }
+          const speakerBuffer = await speakerRes.arrayBuffer();
+          // Float32Array requires 4-byte alignment, so trim any trailing bytes.
+          const alignedByteLength =
+            speakerBuffer.byteLength - (speakerBuffer.byteLength % 4);
+          speakerEmbeddingsRef.current = new Float32Array(
+            speakerBuffer.slice(0, alignedByteLength),
+          );
+        }
+
+        for (let i = 0; i < slides.length; i += 1) {
+          const output = await (
+            ttsRef.current as (
+              text: string,
+              options?: { speaker_embeddings: Float32Array },
+            ) => Promise<{ audio: Float32Array; sampling_rate: number }>
+          )(slides[i].spoken_text, speakerEmbeddingsRef.current
+            ? { speaker_embeddings: speakerEmbeddingsRef.current }
+            : undefined);
+
+          const wavData = float32ToWav(output.audio, output.sampling_rate);
+          const wavBytes = new Uint8Array(wavData.byteLength);
+          wavBytes.set(wavData);
+          const wavBlob = new Blob([wavBytes.buffer], { type: "audio/wav" });
+          const durationSec = await getAudioDuration(wavBlob);
+          audioFiles.push({ blob: wavBlob, durationSec });
+          appendLog(`Generated audio_${i + 1}.wav (${durationSec.toFixed(2)}s)`);
+        }
       }
 
       setStatus("Rendering Video");
@@ -385,7 +435,7 @@ Topic: ${prompt}`;
         <section className="rounded-xl border border-slate-800 bg-slate-900/80 p-6 space-y-4">
           <h1 className="text-2xl font-bold">stuni-web V1</h1>
           <p className="text-slate-300 text-sm">
-            OpenRouter script generation + local TTS + FFmpeg.wasm video rendering.
+            OpenRouter script generation + remote/local audio + FFmpeg.wasm video rendering.
           </p>
 
           <label htmlFor="prompt" className="text-sm text-slate-300 block">
