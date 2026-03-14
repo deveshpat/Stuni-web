@@ -303,6 +303,7 @@ Topic: ${prompt}`;
             throw new Error("Failed to fetch SpeechT5 speaker embeddings.");
           }
           const speakerBuffer = await speakerRes.arrayBuffer();
+          // Float32Array requires 4-byte alignment, so trim any trailing bytes.
           const alignedByteLength =
             speakerBuffer.byteLength - (speakerBuffer.byteLength % 4);
           speakerEmbeddingsRef.current = new Float32Array(

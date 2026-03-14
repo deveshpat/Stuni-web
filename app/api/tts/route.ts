@@ -5,6 +5,7 @@ const DEFAULT_TTS_MODEL = "openai/gpt-4o-mini-tts";
 const DEFAULT_TTS_VOICE = "alloy";
 
 export async function POST(request: NextRequest) {
+  // Prefer a dedicated TTS key, but allow OPENROUTER_API_KEY as a drop-in fallback.
   const apiKey = process.env.TTS_API_KEY || process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
@@ -16,9 +17,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const body = (await request.json().catch(() => null)) as {
-    text?: string;
-  } | null;
+  let body: { text?: string } | null = null;
+  try {
+    body = (await request.json()) as { text?: string };
+  } catch {
+    return NextResponse.json({ error: "Malformed JSON body." }, { status: 400 });
+  }
   const text = body?.text?.trim();
   if (!text) {
     return NextResponse.json({ error: "Text is required." }, { status: 400 });
@@ -55,9 +59,10 @@ export async function POST(request: NextRequest) {
 
   if (!ttsResponse.ok) {
     const failureBody = await ttsResponse.text();
+    const safeFailureBody = failureBody.slice(0, 500);
     return NextResponse.json(
       {
-        error: `Remote TTS request failed (${ttsResponse.status}). ${failureBody}`,
+        error: `Remote TTS request failed (${ttsResponse.status}). ${safeFailureBody}`,
       },
       { status: 502 },
     );
