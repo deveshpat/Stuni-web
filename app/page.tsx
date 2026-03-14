@@ -15,7 +15,6 @@ type GeneratedAudio = {
 
 const DEFAULT_PROMPT =
   "Accelerators in India";
-const WEBLLM_MODEL = "Llama-3.2-1B-Instruct-q4f16_1-MLC";
 const SPEECH_MODEL = "Xenova/speecht5_tts";
 const SPEAKER_EMBEDDINGS_URL =
   "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin";
@@ -172,7 +171,6 @@ export default function Home() {
   const [logs, setLogs] = useState<string[]>([]);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [slideCount, setSlideCount] = useState(0);
-  const llmRef = useRef<unknown>(null);
   const ttsRef = useRef<unknown>(null);
   const ffmpegRef = useRef<unknown>(null);
   const speakerEmbeddingsRef = useRef<Float32Array | null>(null);
@@ -196,21 +194,10 @@ export default function Home() {
     setLogs([]);
     setIsGenerating(true);
     setStatus("Loading AI");
-    appendLog("Starting in-browser generation pipeline.");
+    appendLog("Starting generation pipeline.");
 
     try {
-      appendLog("Step 1/4: Initializing WebLLM.");
-      if (!llmRef.current) {
-        const webllm = await import("@mlc-ai/web-llm");
-        llmRef.current = await webllm.CreateMLCEngine(WEBLLM_MODEL, {
-          initProgressCallback: (report) => {
-            appendLog(`WebLLM: ${report.text}`);
-          },
-        });
-      } else {
-        appendLog("WebLLM already initialized. Reusing loaded engine.");
-      }
-
+      appendLog("Step 1/4: Requesting script from OpenRouter.");
       setStatus("Writing Script");
       const llmPrompt = `You are an educational scriptwriter for short explainer videos.
 Return valid raw JSON only. Do not use markdown, code fences, or extra text.
@@ -219,23 +206,24 @@ Generate 4 slides in this exact format:
 
 Topic: ${prompt}`;
 
-      const llmResponse = await (
-        llmRef.current as {
-          chat: {
-            completions: {
-              create: (input: unknown) => Promise<{
-                choices: Array<{ message: { content: string | null } }>;
-              }>;
-            };
-          };
-        }
-      ).chat.completions.create({
-        messages: [{ role: "user", content: llmPrompt }],
-        temperature: 0.2,
-        max_tokens: 800,
+      const scriptResponse = await fetch("/api/script", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ prompt: llmPrompt }),
       });
+      if (!scriptResponse.ok) {
+        const responseBody = (await scriptResponse.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        throw new Error(responseBody.error ?? "Failed to generate script.");
+      }
+      const scriptBody = (await scriptResponse.json()) as {
+        content?: string;
+      };
 
-      const rawScript = llmResponse.choices?.[0]?.message?.content ?? "";
+      const rawScript = scriptBody.content ?? "";
       appendLog(`LLM raw output received (${rawScript.length} chars).`);
       const slides = parseSlidesFromLLM(rawScript);
       setSlideCount(slides.length);
@@ -397,8 +385,7 @@ Topic: ${prompt}`;
         <section className="rounded-xl border border-slate-800 bg-slate-900/80 p-6 space-y-4">
           <h1 className="text-2xl font-bold">stuni-web V1</h1>
           <p className="text-slate-300 text-sm">
-            100% local, in-browser AI explainer video generator (WebLLM + TTS +
-            FFmpeg.wasm).
+            OpenRouter script generation + local TTS + FFmpeg.wasm video rendering.
           </p>
 
           <label htmlFor="prompt" className="text-sm text-slate-300 block">
