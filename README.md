@@ -46,10 +46,12 @@ Open http://localhost:3000
 
 ## Keeping the API key private on GitHub
 
+- Yes — this setup stays secure even if the repository is public, as long as `OPENROUTER_API_KEY` is stored only in server-side secrets and never committed to source control.
 - Never commit real keys to the repository.
 - Keep local keys only in `.env.local` (already ignored by `.gitignore`).
 - For GitHub Actions, store the key in **Repository Settings → Secrets and variables → Actions → New repository secret** (name it `OPENROUTER_API_KEY`).
-- For deployments (for example Vercel), add `OPENROUTER_API_KEY` in deployment environment variables, not in code.
+- For deployments (e.g., Vercel), add `OPENROUTER_API_KEY` in deployment environment variables, not in code.
+- Never expose the key to the browser (do not use `NEXT_PUBLIC_OPENROUTER_API_KEY` or any client-bundled variable).
 - If a key is ever pasted in chat/commits/issues, rotate/revoke it immediately in OpenRouter.
 
 ## Notes
