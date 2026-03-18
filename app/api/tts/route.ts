@@ -1,22 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const DEFAULT_TTS_BASE_URL = "https://openrouter.ai/api/v1";
-const DEFAULT_TTS_MODEL = "openai/gpt-4o-mini-tts";
-const DEFAULT_TTS_VOICE = "alloy";
+// Pipeline instance is cached at module level so the model is loaded once
+// per server process — subsequent requests are fast without any new download.
+let pipelineInstance: unknown = null;
+let loadedModel = "";
+
+function float32ToWav(audioData: Float32Array, sampleRate: number): Buffer {
+  const bitsPerSample = 16;
+  const dataSize = audioData.length * 2;
+  const buf = Buffer.alloc(44 + dataSize);
+
+  buf.write("RIFF", 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write("WAVE", 8);
+  buf.write("fmt ", 12);
+  buf.writeUInt32LE(16, 16);       // PCM chunk size
+  buf.writeUInt16LE(1, 20);        // PCM format
+  buf.writeUInt16LE(1, 22);        // mono
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * 2, 28); // byte rate
+  buf.writeUInt16LE(2, 32);        // block align
+  buf.writeUInt16LE(bitsPerSample, 34);
+  buf.write("data", 36);
+  buf.writeUInt32LE(dataSize, 40);
+
+  for (let i = 0; i < audioData.length; i++) {
+    const s = Math.max(-1, Math.min(1, audioData[i]));
+    buf.writeInt16LE(Math.round(s < 0 ? s * 0x8000 : s * 0x7fff), 44 + i * 2);
+  }
+  return buf;
+}
 
 export async function POST(request: NextRequest) {
-  // Prefer a dedicated TTS key, but allow OPENROUTER_API_KEY as a drop-in fallback.
-  const apiKey = process.env.TTS_API_KEY || process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        error:
-          "Server is missing TTS_API_KEY (or OPENROUTER_API_KEY fallback) for remote audio generation.",
-      },
-      { status: 500 },
-    );
-  }
-
   let body: { text?: string } | null = null;
   try {
     body = (await request.json()) as { text?: string };
@@ -28,52 +43,33 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Text is required." }, { status: 400 });
   }
 
-  const baseUrl = (process.env.TTS_API_BASE_URL || DEFAULT_TTS_BASE_URL).replace(
-    /\/$/,
-    "",
-  );
-  const model = process.env.TTS_MODEL || DEFAULT_TTS_MODEL;
-  const voice = process.env.TTS_VOICE || DEFAULT_TTS_VOICE;
+  const model = (process.env.TTS_MODEL || "Xenova/mms-tts-eng").trim();
 
-  let ttsResponse: Response;
   try {
-    ttsResponse = await fetch(`${baseUrl}/audio/speech`, {
-      method: "POST",
+    // Re-initialise if the model env var changed between requests.
+    if (!pipelineInstance || loadedModel !== model) {
+      const { pipeline } = await import("@xenova/transformers");
+      pipelineInstance = await pipeline("text-to-speech", model);
+      loadedModel = model;
+    }
+
+    const output = await (
+      pipelineInstance as (
+        text: string,
+      ) => Promise<{ audio: Float32Array; sampling_rate: number }>
+    )(text);
+
+    const wav = float32ToWav(output.audio, output.sampling_rate);
+
+    return new NextResponse(wav.buffer as ArrayBuffer, {
+      status: 200,
       headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "audio/wav",
+        "Cache-Control": "no-store",
       },
-      body: JSON.stringify({
-        model,
-        voice,
-        input: text,
-        response_format: "mp3",
-      }),
     });
-  } catch {
-    return NextResponse.json(
-      { error: "Remote TTS request failed due to a network error." },
-      { status: 502 },
-    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: `TTS failed: ${message}` }, { status: 500 });
   }
-
-  if (!ttsResponse.ok) {
-    const failureBody = await ttsResponse.text();
-    const safeFailureBody = failureBody.slice(0, 500);
-    return NextResponse.json(
-      {
-        error: `Remote TTS request failed (${ttsResponse.status}). ${safeFailureBody}`,
-      },
-      { status: 502 },
-    );
-  }
-
-  const audioBuffer = await ttsResponse.arrayBuffer();
-  return new NextResponse(audioBuffer, {
-    status: 200,
-    headers: {
-      "Content-Type": "audio/mpeg",
-      "Cache-Control": "no-store",
-    },
-  });
 }

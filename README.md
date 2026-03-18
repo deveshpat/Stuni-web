@@ -48,8 +48,12 @@ NEXT_PUBLIC_AUDIO_PROVIDER=remote
 # If TTS_API_KEY is empty, OPENROUTER_API_KEY is used.
 TTS_API_KEY=
 TTS_API_BASE_URL=https://openrouter.ai/api/v1
-TTS_MODEL=openai/gpt-4o-mini-tts
+TTS_MODEL=openrouter/auto
 TTS_VOICE=alloy
+
+# Optional: only enable browser-side fallback when you explicitly want it.
+# Keeping this false avoids long freezes on weak devices when remote TTS fails.
+NEXT_PUBLIC_ENABLE_LOCAL_TTS_FALLBACK=false
 
 # Local fallback model
 NEXT_PUBLIC_LOCAL_TTS_MODEL=Xenova/mms-tts-eng
