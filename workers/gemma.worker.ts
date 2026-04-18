@@ -1,56 +1,31 @@
-import { env, pipeline } from "@huggingface/transformers";
+import { pipeline, TextStreamer, env } from "@huggingface/transformers";
 
 env.allowRemoteModels = true;
 env.useBrowserCache = true;
 
-const MODEL_ID = "onnx-community/gemma-4-E4B-it-ONNX";
-const DTYPE_WEBGPU = "q4f16";
-const DTYPE_WASM = "q4f16";
+// Text-only ONNX variant — E4B (~1.5 GB q4f16) is the default.
+// To switch to E2B (~500 MB), change the model ID here only.
+const MODEL_E4B = "onnx-community/gemma-4-E4B-it-ONNX";
+const MODEL_E2B = "onnx-community/gemma-4-E2B-it-ONNX";
+const MODEL_ID = MODEL_E4B;
+const DTYPE = "q4f16";
 
-type DType = "q4f16" | "fp32";
+type GeneratorPipeline = Awaited<ReturnType<typeof pipeline>>;
 
-type ProgressPayload = Record<string, unknown>;
+let generator: GeneratorPipeline | null = null;
 
-type GeneratorFn = (
-  input: unknown,
-  options: Record<string, unknown>,
-) => Promise<Array<{ generated_text: unknown[] }>>;
-
-let generator: GeneratorFn | null = null;
-
-async function loadGenerator(
-  id: string,
-  dtype: DType,
-  device: "webgpu" | "wasm",
-  requestId: string,
-  config?: unknown,
-  modelFileName?: string,
-  subfolder?: string,
-) {
-  return pipeline("text-generation", id, {
-    dtype,
-    device,
-    config: config as never,
-    model_file_name: modelFileName,
-    subfolder,
-    progress_callback: (progress: ProgressPayload) => {
-      self.postMessage({ type: "progress", id: requestId, payload: progress });
-    },
-  });
-}
-
-async function fetchPatchedGemma4Config(): Promise<Record<string, unknown>> {
-  const response = await fetch(`https://huggingface.co/${MODEL_ID}/resolve/main/config.json`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch Gemma 4 config: ${response.status}`);
+// Detect whether a real WebGPU adapter is available in this worker context.
+async function resolveDevice(): Promise<"webgpu" | "wasm"> {
+  try {
+    const nav = self.navigator as Navigator & {
+      gpu?: { requestAdapter: () => Promise<unknown> };
+    };
+    if (!nav.gpu) return "wasm";
+    const adapter = await nav.gpu.requestAdapter();
+    return adapter ? "webgpu" : "wasm";
+  } catch {
+    return "wasm";
   }
-
-  const config = (await response.json()) as Record<string, unknown>;
-  // transformers.js may not yet recognize `gemma4`; `gemma3_text` is the closest supported text-only class.
-  config.model_type = "gemma3_text";
-  // Avoid inheriting restrictive device hints from upstream config in compatibility mode.
-  delete config["transformers.js_config"];
-  return config;
 }
 
 self.onmessage = async (e: MessageEvent) => {
@@ -60,72 +35,35 @@ self.onmessage = async (e: MessageEvent) => {
     payload: Record<string, unknown>;
   };
 
+  // ── LOAD ────────────────────────────────────────────────────────────────────
   if (type === "load") {
-    const failures: string[] = [];
-    const attempts: Array<{
-      device: "webgpu" | "wasm";
-      dtype: DType;
-      compatMode: boolean;
-      modelFileName?: string;
-      subfolder?: string;
-    }> = [
-      { device: "webgpu", dtype: DTYPE_WEBGPU, compatMode: false },
-      { device: "webgpu", dtype: "fp32", compatMode: true, modelFileName: "decoder_model_merged" },
-      { device: "webgpu", dtype: "fp32", compatMode: true, modelFileName: "decoder_model_merged", subfolder: "" },
-      { device: "wasm", dtype: DTYPE_WASM, compatMode: false },
-      { device: "wasm", dtype: DTYPE_WASM, compatMode: true },
-      { device: "wasm", dtype: "fp32", compatMode: true },
-      { device: "wasm", dtype: "fp32", compatMode: true, modelFileName: "model_q4f16" },
-      { device: "wasm", dtype: "fp32", compatMode: true, modelFileName: "model_quantized" },
-      { device: "wasm", dtype: "fp32", compatMode: true, modelFileName: "decoder_model_merged" },
-      { device: "wasm", dtype: "fp32", compatMode: true, modelFileName: "model", subfolder: "" },
-      { device: "wasm", dtype: "fp32", compatMode: true, modelFileName: "model_q4f16", subfolder: "" },
-      { device: "wasm", dtype: "fp32", compatMode: true, modelFileName: "model_quantized", subfolder: "" },
-      { device: "wasm", dtype: "fp32", compatMode: true, modelFileName: "decoder_model_merged", subfolder: "" },
-    ];
+    try {
+      const device = await resolveDevice();
 
-    for (const attempt of attempts) {
-      try {
-        const config = attempt.compatMode ? await fetchPatchedGemma4Config() : undefined;
-        generator = (await loadGenerator(
-          MODEL_ID,
-          attempt.dtype,
-          attempt.device,
-          id,
-          config,
-          attempt.modelFileName,
-          attempt.subfolder,
-        )) as GeneratorFn;
-        self.postMessage({
-          type: "loaded",
-          id,
-          payload: {
-            model: MODEL_ID,
-            dtype: attempt.dtype,
-            device: attempt.device,
-            compatMode: attempt.compatMode,
-            modelFileName: attempt.modelFileName ?? null,
-            subfolder: attempt.subfolder ?? "onnx",
-          },
-        });
-        break;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        failures.push(
-          `${MODEL_ID} (${attempt.device}/${attempt.dtype}, compat=${attempt.compatMode}, file=${attempt.modelFileName ?? "model"}, subfolder=${attempt.subfolder ?? "onnx"}): ${msg}`,
-        );
-      }
-    }
+      generator = await pipeline("text-generation", MODEL_ID, {
+        device,
+        dtype: DTYPE,
+        progress_callback: (progress: Record<string, unknown>) => {
+          self.postMessage({ type: "progress", id, payload: progress });
+        },
+      });
 
-    if (!generator) {
+      self.postMessage({
+        type: "loaded",
+        id,
+        payload: { model: MODEL_ID, device, dtype: DTYPE },
+      });
+    } catch (err) {
       self.postMessage({
         type: "error",
         id,
-        payload: `Unable to load any local text model. Attempts: ${failures.join(" | ")}`,
+        payload: err instanceof Error ? err.message : String(err),
       });
     }
+    return;
   }
 
+  // ── GENERATE ─────────────────────────────────────────────────────────────────
   if (type === "generate") {
     if (!generator) {
       self.postMessage({ type: "error", id, payload: "Model not loaded" });
@@ -133,29 +71,41 @@ self.onmessage = async (e: MessageEvent) => {
     }
 
     try {
-      const { messages, tools, max_new_tokens = 512 } = payload;
-      const output = await generator(messages, {
-        max_new_tokens,
-        tools: tools ?? undefined,
-        do_sample: false,
-        return_dict_in_generate: false,
-        streamer: {
-          put: (token: string) => {
+      const { messages, max_new_tokens = 512 } = payload as {
+        messages: Array<{ role: string; content: string }>;
+        max_new_tokens?: number;
+        tools?: unknown[];
+      };
+
+      // TextStreamer streams decoded tokens back to the main thread as they
+      // are generated. skip_prompt suppresses echoing the input messages.
+      const streamer = new TextStreamer(
+        (generator as unknown as { tokenizer: unknown }).tokenizer,
+        {
+          skip_prompt: true,
+          skip_special_tokens: true,
+          callback_function: (token: string) => {
             self.postMessage({ type: "token", id, payload: token });
           },
-          end: () => {
-            // Let the final result message terminate the request.
-          },
         },
-      });
+      );
 
-      if (output?.[0]?.generated_text) {
-        const last = output[0].generated_text.at(-1);
-        self.postMessage({ type: "result", id, payload: last });
-      }
+      const output = (await generator(messages, {
+        max_new_tokens,
+        do_sample: false,
+        streamer,
+      })) as Array<{ generated_text: unknown[] }>;
+
+      // Send the final structured result (last message in the conversation).
+      const last = output?.[0]?.generated_text?.at(-1) ?? null;
+      self.postMessage({ type: "result", id, payload: last });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      self.postMessage({ type: "error", id, payload: msg });
+      self.postMessage({
+        type: "error",
+        id,
+        payload: err instanceof Error ? err.message : String(err),
+      });
     }
+    return;
   }
 };
