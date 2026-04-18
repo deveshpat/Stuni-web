@@ -144,7 +144,7 @@ self.onmessage = async (e: MessageEvent) => {
             self.postMessage({ type: "token", id, payload: token });
           },
           end: () => {
-            self.postMessage({ type: "done", id });
+            // Let the final result message terminate the request.
           },
         },
       });

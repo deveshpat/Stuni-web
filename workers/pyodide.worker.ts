@@ -5,6 +5,11 @@ declare const loadPyodide: (opts: { indexURL: string }) => Promise<{
   loadPackagesFromImports: (code: string) => Promise<void>;
 }>;
 
+type PyodideProxyLike = {
+  toJs?: (options?: Record<string, unknown>) => unknown;
+  destroy?: () => void;
+};
+
 let pyodide: Awaited<ReturnType<typeof loadPyodide>> | null = null;
 
 self.onmessage = async (e: MessageEvent) => {
@@ -35,7 +40,7 @@ self.onmessage = async (e: MessageEvent) => {
     try {
       const code = payload.code || "";
       await pyodide.loadPackagesFromImports(code);
-      const result = (await pyodide.runPythonAsync(`
+      const rawResult = (await pyodide.runPythonAsync(`
 import io
 import contextlib
 import base64
@@ -59,7 +64,23 @@ except Exception:
     pass
 
 {"stdout": _stdout.getvalue(), "chart": _chart}
-`)) as { stdout?: string; chart?: string };
+`)) as unknown;
+
+      const proxy = rawResult as PyodideProxyLike;
+      const result =
+        proxy && typeof proxy === "object" && typeof proxy.toJs === "function"
+          ? (proxy.toJs({ dict_converter: Object.fromEntries }) as {
+              stdout?: string;
+              chart?: string;
+            })
+          : ((rawResult as {
+              stdout?: string;
+              chart?: string;
+            }) ?? {});
+
+      if (proxy && typeof proxy === "object" && typeof proxy.destroy === "function") {
+        proxy.destroy();
+      }
 
       self.postMessage({
         type: "result",
