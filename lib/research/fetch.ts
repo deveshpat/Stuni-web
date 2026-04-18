@@ -10,16 +10,34 @@ type CacheRecord = {
   timestamp: number;
 };
 
-const dbPromise = openDB(CACHE_DB, 1, {
-  upgrade(db) {
-    if (!db.objectStoreNames.contains("pages")) {
-      db.createObjectStore("pages", { keyPath: "key" });
-    }
-  },
-});
+function canUseIndexedDb(): boolean {
+  return typeof window !== "undefined" && typeof indexedDB !== "undefined";
+}
+
+let dbPromise: ReturnType<typeof openDB> | null = null;
+
+function getDbPromise(): ReturnType<typeof openDB> | null {
+  if (!canUseIndexedDb()) {
+    return null;
+  }
+
+  if (!dbPromise) {
+    dbPromise = openDB(CACHE_DB, 1, {
+      upgrade(db) {
+        if (!db.objectStoreNames.contains("pages")) {
+          db.createObjectStore("pages", { keyPath: "key" });
+        }
+      },
+    });
+  }
+
+  return dbPromise;
+}
 
 async function getCached(key: string): Promise<string | null> {
-  const db = await dbPromise;
+  const promise = getDbPromise();
+  if (!promise) return null;
+  const db = await promise;
   const record = (await db.get("pages", key)) as CacheRecord | undefined;
   if (!record) return null;
   if (Date.now() - record.timestamp > CACHE_TTL) {
@@ -30,7 +48,9 @@ async function getCached(key: string): Promise<string | null> {
 }
 
 async function setCached(key: string, value: string): Promise<void> {
-  const db = await dbPromise;
+  const promise = getDbPromise();
+  if (!promise) return;
+  const db = await promise;
   await db.put("pages", { key, value, timestamp: Date.now() } as CacheRecord);
 }
 

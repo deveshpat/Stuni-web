@@ -16,7 +16,16 @@ type GeneratedAudio = {
   durationSec: number;
 };
 
+type GpuPreflight = {
+  checked: boolean;
+  hasNavigatorGpu: boolean;
+  secureContext: boolean;
+  adapterAvailable: boolean;
+  error: string | null;
+};
+
 const DEFAULT_PROMPT = "Accelerators in India";
+const SCRIPT_GEN_TIMEOUT_MS = 240_000;
 
 function parseSlidesFromLLM(raw: string): Slide[] {
   const startIndex = raw.indexOf("[");
@@ -132,12 +141,81 @@ export default function Home() {
   const [slideCount, setSlideCount] = useState(0);
   const [modelProgressPct, setModelProgressPct] = useState(0);
   const [showModelProgress, setShowModelProgress] = useState(false);
+  const [gpuPreflight, setGpuPreflight] = useState<GpuPreflight>({
+    checked: false,
+    hasNavigatorGpu: false,
+    secureContext: false,
+    adapterAvailable: false,
+    error: null,
+  });
   const ffmpegRef = useRef<unknown>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const runPreflight = async () => {
+      const secureContext = window.isSecureContext;
+      const nav = navigator as Navigator & {
+        gpu?: {
+          requestAdapter: () => Promise<unknown>;
+        };
+      };
+
+      const hasNavigatorGpu = typeof nav.gpu !== "undefined";
+
+      if (!secureContext || !hasNavigatorGpu) {
+        if (!cancelled) {
+          setGpuPreflight({
+            checked: true,
+            hasNavigatorGpu,
+            secureContext,
+            adapterAvailable: false,
+            error: !secureContext
+              ? "Page is not running in a secure context (HTTPS)."
+              : "navigator.gpu is not available in this browser.",
+          });
+        }
+        return;
+      }
+
+      try {
+        const adapter = await nav.gpu.requestAdapter();
+        if (!cancelled) {
+          setGpuPreflight({
+            checked: true,
+            hasNavigatorGpu,
+            secureContext,
+            adapterAvailable: Boolean(adapter),
+            error: adapter ? null : "No WebGPU adapter was returned by the browser.",
+          });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!cancelled) {
+          setGpuPreflight({
+            checked: true,
+            hasNavigatorGpu,
+            secureContext,
+            adapterAvailable: false,
+            error: `WebGPU adapter request failed: ${message}`,
+          });
+        }
+      }
+    };
+
+    runPreflight();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const canRunGemma4 = gpuPreflight.checked && gpuPreflight.secureContext && gpuPreflight.adapterAvailable;
 
   const PIPELINE_STEPS = [
     { label: "Script", num: "1" },
@@ -216,13 +294,30 @@ Topic: ${prompt}`;
       appendLog("Gemma 4 ready. Generating script.");
 
       let rawScript = "";
-      await gemma.generate({
-        messages: [{ role: "user", content: llmPrompt }],
-        max_new_tokens: 800,
-        onToken: (token) => {
-          rawScript += token;
-        },
-      });
+      let tokenCount = 0;
+      let lastHeartbeat = Date.now();
+
+      await Promise.race([
+        gemma.generate({
+          messages: [{ role: "user", content: llmPrompt }],
+          max_new_tokens: 320,
+          onToken: (token) => {
+            rawScript += token;
+            tokenCount += 1;
+
+            const now = Date.now();
+            if (now - lastHeartbeat >= 3000) {
+              appendLog(`Script generation in progress... (${tokenCount} tokens)`);
+              lastHeartbeat = now;
+            }
+          },
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error("Script generation timed out after 4 minutes. Please retry."));
+          }, SCRIPT_GEN_TIMEOUT_MS);
+        }),
+      ]);
 
       appendLog(`LLM raw output received (${rawScript.length} chars).`);
       const slides = parseSlidesFromLLM(rawScript);
@@ -362,10 +457,9 @@ Topic: ${prompt}`;
       await ffmpeg.deleteFile("segments.txt").catch(() => undefined);
 
       const output = await ffmpeg.readFile("stuni_explainer.mp4");
-      const videoBytes = new Uint8Array(output.byteLength);
-      videoBytes.set(output);
+      // Avoid allocating a second full-size copy of the rendered video in memory.
       const outputUrl = URL.createObjectURL(
-        new Blob([videoBytes.buffer], { type: "video/mp4" }),
+        new Blob([output], { type: "video/mp4" }),
       );
       setVideoUrl(outputUrl);
       setStatus("Done");
@@ -442,6 +536,38 @@ Topic: ${prompt}`;
             disabled={isGenerating}
           />
 
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400 uppercase tracking-widest">WebGPU Preflight</span>
+              {canRunGemma4 ? (
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                  Ready
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                  Blocked
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+              <div className="rounded-md border border-slate-800 px-2 py-1 text-slate-300">
+                HTTPS: {gpuPreflight.secureContext ? "yes" : "no"}
+              </div>
+              <div className="rounded-md border border-slate-800 px-2 py-1 text-slate-300">
+                navigator.gpu: {gpuPreflight.hasNavigatorGpu ? "yes" : "no"}
+              </div>
+              <div className="rounded-md border border-slate-800 px-2 py-1 text-slate-300">
+                Adapter: {gpuPreflight.adapterAvailable ? "yes" : "no"}
+              </div>
+            </div>
+            {!canRunGemma4 && gpuPreflight.checked && (
+              <p className="text-amber-300/90">{gpuPreflight.error || "WebGPU checks failed."}</p>
+            )}
+            {!gpuPreflight.checked && (
+              <p className="text-slate-500">Checking browser capabilities...</p>
+            )}
+          </div>
+
           {showModelProgress && (
             <div className="space-y-2">
               <div className="flex justify-between text-xs text-slate-400">
@@ -460,7 +586,7 @@ Topic: ${prompt}`;
           <button
             type="button"
             onClick={generateVideo}
-            disabled={isGenerating || !prompt.trim()}
+            disabled={isGenerating || !prompt.trim() || !canRunGemma4}
             className="group relative w-full rounded-xl px-4 py-3.5 font-semibold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
           >
             <span className="absolute inset-0 bg-gradient-to-r from-indigo-600 to-violet-600 group-hover:from-indigo-500 group-hover:to-violet-500 transition-all duration-200" />
