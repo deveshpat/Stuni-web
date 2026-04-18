@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { gemma } from "@/lib/gemma";
+import { tts } from "@/lib/tts";
 
 type Slide = {
   spoken_text: string;
@@ -13,15 +16,7 @@ type GeneratedAudio = {
   durationSec: number;
 };
 
-const DEFAULT_PROMPT =
-  "Accelerators in India";
-const AUDIO_PROVIDER = process.env.NEXT_PUBLIC_AUDIO_PROVIDER || "remote";
-const ENABLE_LOCAL_TTS_FALLBACK =
-  process.env.NEXT_PUBLIC_ENABLE_LOCAL_TTS_FALLBACK === "true";
-const LOCAL_TTS_MODEL =
-  process.env.NEXT_PUBLIC_LOCAL_TTS_MODEL || "Xenova/mms-tts-eng";
-const SPEAKER_EMBEDDINGS_URL =
-  "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/speaker_embeddings.bin";
+const DEFAULT_PROMPT = "Accelerators in India";
 
 function parseSlidesFromLLM(raw: string): Slide[] {
   const startIndex = raw.indexOf("[");
@@ -81,7 +76,6 @@ function wrapText(
 
 function drawSlideToBlob(slide: Slide): Promise<Blob> {
   const canvas = document.createElement("canvas");
-  // 480p is much safer for ffmpeg.wasm memory limits in browsers.
   canvas.width = 854;
   canvas.height = 480;
   const ctx = canvas.getContext("2d");
@@ -105,14 +99,7 @@ function drawSlideToBlob(slide: Slide): Promise<Blob> {
 
   ctx.font = "24px Arial";
   ctx.fillStyle = "#d1d5db";
-  wrapText(
-    ctx,
-    `• ${slide.slide_bullet}`,
-    canvas.width / 2,
-    290,
-    700,
-    34,
-  );
+  wrapText(ctx, `• ${slide.slide_bullet}`, canvas.width / 2, 290, 700, 34);
 
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
@@ -123,39 +110,6 @@ function drawSlideToBlob(slide: Slide): Promise<Blob> {
       resolve(blob);
     }, "image/png");
   });
-}
-
-function float32ToWav(floatData: Float32Array, sampleRate: number): Uint8Array {
-  const buffer = new ArrayBuffer(44 + floatData.length * 2);
-  const view = new DataView(buffer);
-  const writeString = (offset: number, value: string) => {
-    for (let i = 0; i < value.length; i += 1) {
-      view.setUint8(offset + i, value.charCodeAt(i));
-    }
-  };
-
-  writeString(0, "RIFF");
-  view.setUint32(4, 36 + floatData.length * 2, true);
-  writeString(8, "WAVE");
-  writeString(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeString(36, "data");
-  view.setUint32(40, floatData.length * 2, true);
-
-  let offset = 44;
-  for (let i = 0; i < floatData.length; i += 1) {
-    const value = Math.max(-1, Math.min(1, floatData[i]));
-    view.setInt16(offset, value < 0 ? value * 0x8000 : value * 0x7fff, true);
-    offset += 2;
-  }
-
-  return new Uint8Array(buffer);
 }
 
 async function getAudioDuration(blob: Blob): Promise<number> {
@@ -176,9 +130,9 @@ export default function Home() {
   const [logs, setLogs] = useState<string[]>([]);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [slideCount, setSlideCount] = useState(0);
-  const ttsRef = useRef<unknown>(null);
+  const [modelProgressPct, setModelProgressPct] = useState(0);
+  const [showModelProgress, setShowModelProgress] = useState(false);
   const ffmpegRef = useRef<unknown>(null);
-  const speakerEmbeddingsRef = useRef<Float32Array | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -186,20 +140,29 @@ export default function Home() {
   }, [logs]);
 
   const PIPELINE_STEPS = [
-    { label: "Script",  num: "1" },
+    { label: "Script", num: "1" },
     { label: "Visuals", num: "2" },
-    { label: "Audio",   num: "3" },
-    { label: "Render",  num: "4" },
+    { label: "Audio", num: "3" },
+    { label: "Render", num: "4" },
   ];
 
   const activeStep: number =
-    ({ "Writing Script": 0, "Generating Visuals": 1, "Generating Audio": 2, "Rendering Video": 3, Done: 4 } as Record<string, number>)[status] ?? -1;
+    ({
+      "Writing Script": 0,
+      "Generating Visuals": 1,
+      "Generating Audio": 2,
+      "Rendering Video": 3,
+      Done: 4,
+    } as Record<string, number>)[status] ?? -1;
 
   const statusColor =
-    status === "Done"   ? "text-emerald-400 bg-emerald-400/10 border-emerald-400/20" :
-    status === "Failed" ? "text-red-400 bg-red-400/10 border-red-400/20" :
-    status === "Idle"   ? "text-slate-400 bg-slate-800/60 border-slate-700" :
-                          "text-amber-400 bg-amber-400/10 border-amber-400/20";
+    status === "Done"
+      ? "text-emerald-400 bg-emerald-400/10 border-emerald-400/20"
+      : status === "Failed"
+        ? "text-red-400 bg-red-400/10 border-red-400/20"
+        : status === "Idle"
+          ? "text-slate-400 bg-slate-800/60 border-slate-700"
+          : "text-amber-400 bg-amber-400/10 border-amber-400/20";
 
   const appendLog = (line: string) => {
     console.log(`[stuni-web] ${line}`);
@@ -218,42 +181,49 @@ export default function Home() {
 
     setSlideCount(0);
     setLogs([]);
+    setModelProgressPct(0);
+    setShowModelProgress(false);
     setIsGenerating(true);
     setStatus("Loading AI");
     appendLog("Starting generation pipeline.");
 
     try {
-      appendLog("Step 1/4: Requesting script from OpenRouter.");
       setStatus("Writing Script");
       const llmPrompt = `You are an educational scriptwriter for short explainer videos.
 Return valid raw JSON only. Do not use markdown, code fences, or extra text.
-    Generate 3 slides in this exact format:
+Generate 3 slides in this exact format:
 [{"spoken_text":"...","slide_heading":"...","slide_bullet":"..."}]
 
-    Keep each spoken_text under 18 words.
-    Keep each slide_heading under 8 words.
-    Keep each slide_bullet to a single concise line.
+Keep each spoken_text under 18 words.
+Keep each slide_heading under 8 words.
+Keep each slide_bullet to a single concise line.
 
 Topic: ${prompt}`;
 
-      const scriptResponse = await fetch("/api/script", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ prompt: llmPrompt }),
+      appendLog("Step 1/4: Loading Gemma 4 (first load downloads ~1.5GB, cached after).");
+      setShowModelProgress(true);
+      await gemma.load((p) => {
+        const progress = p.progress;
+        if (typeof progress === "number") {
+          setModelProgressPct(Math.max(0, Math.min(100, Math.round(progress))));
+        }
+        if (typeof p.file === "string" && typeof progress === "number") {
+          appendLog(`Model: ${p.file} ${Math.round(progress)}%`);
+        }
       });
-      if (!scriptResponse.ok) {
-        const responseBody = (await scriptResponse.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        throw new Error(responseBody.error ?? "Failed to generate script.");
-      }
-      const scriptBody = (await scriptResponse.json()) as {
-        content?: string;
-      };
+      setShowModelProgress(false);
 
-      const rawScript = scriptBody.content ?? "";
+      appendLog("Gemma 4 ready. Generating script.");
+
+      let rawScript = "";
+      await gemma.generate({
+        messages: [{ role: "user", content: llmPrompt }],
+        max_new_tokens: 800,
+        onToken: (token) => {
+          rawScript += token;
+        },
+      });
+
       appendLog(`LLM raw output received (${rawScript.length} chars).`);
       const slides = parseSlidesFromLLM(rawScript);
       setSlideCount(slides.length);
@@ -269,105 +239,13 @@ Topic: ${prompt}`;
       }
 
       setStatus("Generating Audio");
+      appendLog("Step 3/4: Generating audio with local TTS worker.");
       const audioFiles: GeneratedAudio[] = [];
-      let usedRemoteAudio = false;
-
-      if (AUDIO_PROVIDER === "remote") {
-        appendLog("Step 3/4: Generating audio via remote API.");
-        try {
-          for (let i = 0; i < slides.length; i += 1) {
-            const ttsResponse = await fetch("/api/tts", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ text: slides[i].spoken_text }),
-            });
-            if (!ttsResponse.ok) {
-              const responseBody = (await ttsResponse.json().catch(() => ({}))) as {
-                error?: string;
-              };
-              throw new Error(responseBody.error ?? "Failed to generate remote audio.");
-            }
-
-            const remoteBlob = await ttsResponse.blob();
-            const durationSec = await getAudioDuration(remoteBlob);
-            audioFiles.push({ blob: remoteBlob, durationSec });
-            appendLog(
-              `Generated audio_${i + 1}.wav via API (${durationSec.toFixed(2)}s)`,
-            );
-          }
-          usedRemoteAudio = true;
-        } catch (remoteError) {
-          const message =
-            remoteError instanceof Error ? remoteError.message : "Unknown error.";
-          appendLog(`Remote audio failed: ${message}`);
-          if (!ENABLE_LOCAL_TTS_FALLBACK) {
-            throw new Error(
-              `Remote TTS failed and local fallback is disabled. ${message} Enable NEXT_PUBLIC_ENABLE_LOCAL_TTS_FALLBACK=true to try browser fallback.`,
-            );
-          }
-          appendLog("Falling back to local Transformers.js TTS.");
-        }
-      }
-
-      if (!usedRemoteAudio) {
-        if (AUDIO_PROVIDER === "remote") {
-          appendLog(
-            "Remote mode switched to local fallback. This may be slow on first run.",
-          );
-        }
-        appendLog(
-          `Step 3/4: Initializing local TTS model (${LOCAL_TTS_MODEL}) for fallback.`,
-        );
-        if (!ttsRef.current) {
-          const { pipeline } = await import("@xenova/transformers");
-          ttsRef.current = await pipeline("text-to-speech", LOCAL_TTS_MODEL, {
-            progress_callback: (info: { status?: string; file?: string }) => {
-              appendLog(
-                `TTS: ${info.status ?? "loading"}${info.file ? ` (${info.file})` : ""}`,
-              );
-            },
-          });
-          appendLog(`Local TTS model loaded: ${LOCAL_TTS_MODEL}`);
-        } else {
-          appendLog("TTS pipeline already initialized. Reusing loaded model.");
-        }
-
-        const requiresSpeakerEmbeddings = /speecht5/i.test(LOCAL_TTS_MODEL);
-        if (requiresSpeakerEmbeddings && !speakerEmbeddingsRef.current) {
-          appendLog("Downloading speaker embeddings for SpeechT5.");
-          const speakerRes = await fetch(SPEAKER_EMBEDDINGS_URL);
-          if (!speakerRes.ok) {
-            throw new Error("Failed to fetch SpeechT5 speaker embeddings.");
-          }
-          const speakerBuffer = await speakerRes.arrayBuffer();
-          // Float32Array requires 4-byte alignment, so trim any trailing bytes.
-          const alignedByteLength =
-            speakerBuffer.byteLength - (speakerBuffer.byteLength % 4);
-          speakerEmbeddingsRef.current = new Float32Array(
-            speakerBuffer.slice(0, alignedByteLength),
-          );
-        }
-
-        for (let i = 0; i < slides.length; i += 1) {
-          const output = await (
-            ttsRef.current as (
-              text: string,
-              options?: { speaker_embeddings: Float32Array },
-            ) => Promise<{ audio: Float32Array; sampling_rate: number }>
-          )(slides[i].spoken_text, speakerEmbeddingsRef.current
-            ? { speaker_embeddings: speakerEmbeddingsRef.current }
-            : undefined);
-
-          const wavData = float32ToWav(output.audio, output.sampling_rate);
-          const wavBytes = new Uint8Array(wavData.byteLength);
-          wavBytes.set(wavData);
-          const wavBlob = new Blob([wavBytes.buffer], { type: "audio/wav" });
-          const durationSec = await getAudioDuration(wavBlob);
-          audioFiles.push({ blob: wavBlob, durationSec });
-          appendLog(`Generated audio_${i + 1}.wav (${durationSec.toFixed(2)}s)`);
-        }
+      for (let i = 0; i < slides.length; i += 1) {
+        const wavBlob = await tts.synthesize(slides[i].spoken_text);
+        const durationSec = await getAudioDuration(wavBlob);
+        audioFiles.push({ blob: wavBlob, durationSec });
+        appendLog(`Generated audio_${i + 1}.wav (${durationSec.toFixed(2)}s)`);
       }
 
       setStatus("Rendering Video");
@@ -452,7 +330,6 @@ Topic: ${prompt}`;
 
         appendLog(`Rendered ${segmentName}`);
 
-        // Free ffmpeg.wasm virtual FS memory as we progress.
         await ffmpeg.deleteFile(slideName).catch(() => undefined);
         await ffmpeg.deleteFile(audioName).catch(() => undefined);
       }
@@ -479,7 +356,6 @@ Topic: ${prompt}`;
         );
       }
 
-      // Cleanup temporary segment files after successful concat.
       for (const segmentName of segmentNames) {
         await ffmpeg.deleteFile(segmentName).catch(() => undefined);
       }
@@ -499,35 +375,55 @@ Topic: ${prompt}`;
       setStatus("Failed");
       appendLog(`Pipeline failed: ${message}`);
     } finally {
+      setShowModelProgress(false);
       setIsGenerating(false);
     }
   };
 
   return (
     <div className="min-h-screen bg-[#030712] text-slate-100 relative overflow-x-hidden">
-      {/* Ambient indigo glow */}
       <div className="fixed inset-0 -z-10 bg-[radial-gradient(ellipse_80%_55%_at_50%_-5%,rgba(99,102,241,0.13),transparent)]" />
-      {/* Subtle dot grid */}
-      <div className="fixed inset-0 -z-10 opacity-40" style={{ backgroundImage: "radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px)", backgroundSize: "32px 32px" }} />
+      <div
+        className="fixed inset-0 -z-10 opacity-40"
+        style={{
+          backgroundImage:
+            "radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px)",
+          backgroundSize: "32px 32px",
+        }}
+      />
 
       <div className="relative max-w-3xl mx-auto px-4 py-12 space-y-6">
-
-        {/* ── Header ── */}
         <header className="text-center space-y-3 pb-2">
           <div className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 mb-1">
             <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse inline-block" />
-            LLM · TTS · FFmpeg.wasm
+            Gemma 4 · Local TTS · FFmpeg.wasm
           </div>
-          <h1 className="text-6xl font-extrabold tracking-tight" style={{ background: "linear-gradient(to bottom, #fff 30%, #94a3b8)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+          <h1
+            className="text-6xl font-extrabold tracking-tight"
+            style={{
+              background: "linear-gradient(to bottom, #fff 30%, #94a3b8)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+            }}
+          >
             stuni
           </h1>
-          <p className="text-slate-500 text-sm">Type a topic. Get a fully narrated explainer video.</p>
+          <p className="text-slate-500 text-sm">
+            Type a topic. Get a fully narrated explainer video.
+          </p>
+          <div>
+            <Link href="/chat" className="text-xs text-indigo-300 underline">
+              Open stuni chat
+            </Link>
+          </div>
         </header>
 
-        {/* ── Input card ── */}
         <div className="rounded-2xl border border-slate-800 bg-slate-900/70 backdrop-blur-sm p-6 space-y-4 shadow-2xl shadow-black/50">
           <div className="flex items-center justify-between">
-            <label htmlFor="prompt" className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+            <label
+              htmlFor="prompt"
+              className="text-xs font-semibold text-slate-400 uppercase tracking-widest"
+            >
               Topic
             </label>
             {slideCount > 0 && (
@@ -536,6 +432,7 @@ Topic: ${prompt}`;
               </span>
             )}
           </div>
+
           <textarea
             id="prompt"
             className="w-full h-36 rounded-xl border border-slate-700/80 bg-slate-950/80 p-4 text-sm text-slate-100 placeholder-slate-600 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 resize-none transition-colors"
@@ -544,6 +441,22 @@ Topic: ${prompt}`;
             placeholder="e.g. How does the immune system work?"
             disabled={isGenerating}
           />
+
+          {showModelProgress && (
+            <div className="space-y-2">
+              <div className="flex justify-between text-xs text-slate-400">
+                <span>Downloading model</span>
+                <span>{modelProgressPct}%</span>
+              </div>
+              <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+                <div
+                  className="h-full bg-emerald-500 transition-all duration-300"
+                  style={{ width: `${modelProgressPct}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           <button
             type="button"
             onClick={generateVideo}
@@ -551,19 +464,38 @@ Topic: ${prompt}`;
             className="group relative w-full rounded-xl px-4 py-3.5 font-semibold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
           >
             <span className="absolute inset-0 bg-gradient-to-r from-indigo-600 to-violet-600 group-hover:from-indigo-500 group-hover:to-violet-500 transition-all duration-200" />
-            <span className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity" style={{ background: "radial-gradient(circle at 50% 120%, rgba(120,119,198,0.35), transparent 60%)" }} />
+            <span
+              className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{
+                background:
+                  "radial-gradient(circle at 50% 120%, rgba(120,119,198,0.35), transparent 60%)",
+              }}
+            />
             <span className="relative flex items-center justify-center gap-2">
               {isGenerating ? (
                 <>
                   <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
                   </svg>
                   {status}…
                 </>
               ) : (
                 <>
-                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+                    <polygon points="5 3 19 12 5 21 5 3" />
+                  </svg>
                   Generate Video
                 </>
               )}
@@ -571,36 +503,51 @@ Topic: ${prompt}`;
           </button>
         </div>
 
-        {/* ── Pipeline stepper ── */}
         {(isGenerating || status === "Done" || status === "Failed") && (
           <div className="rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur-sm px-6 py-5">
             <div className="flex items-center">
               {PIPELINE_STEPS.map((step, i) => {
-                const isDone   = activeStep > i;
+                const isDone = activeStep > i;
                 const isActive = activeStep === i;
                 const isFailed = status === "Failed" && isActive;
                 return (
                   <div key={step.label} className="flex items-center flex-1 last:flex-none">
                     <div className="flex flex-col items-center gap-1.5">
-                      <div className={[
-                        "w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold border transition-all duration-300",
-                        isFailed ? "bg-red-500/15 text-red-400 border-red-500/40" :
-                        isDone   ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/40" :
-                        isActive ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/50 animate-pulse" :
-                                   "bg-slate-800/80 text-slate-600 border-slate-700/60",
-                      ].join(" ")}>
+                      <div
+                        className={[
+                          "w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold border transition-all duration-300",
+                          isFailed
+                            ? "bg-red-500/15 text-red-400 border-red-500/40"
+                            : isDone
+                              ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/40"
+                              : isActive
+                                ? "bg-indigo-500/20 text-indigo-300 border-indigo-500/50 animate-pulse"
+                                : "bg-slate-800/80 text-slate-600 border-slate-700/60",
+                        ].join(" ")}
+                      >
                         {isDone ? "✓" : isFailed ? "✕" : step.num}
                       </div>
-                      <span className={[
-                        "text-xs font-medium",
-                        isFailed ? "text-red-400" :
-                        isDone   ? "text-emerald-400" :
-                        isActive ? "text-indigo-300" :
-                                   "text-slate-600",
-                      ].join(" ")}>{step.label}</span>
+                      <span
+                        className={[
+                          "text-xs font-medium",
+                          isFailed
+                            ? "text-red-400"
+                            : isDone
+                              ? "text-emerald-400"
+                              : isActive
+                                ? "text-indigo-300"
+                                : "text-slate-600",
+                        ].join(" ")}
+                      >
+                        {step.label}
+                      </span>
                     </div>
                     {i < PIPELINE_STEPS.length - 1 && (
-                      <div className={`h-px flex-1 mx-3 mb-5 transition-all duration-500 ${isDone ? "bg-emerald-500/30" : "bg-slate-800"}`} />
+                      <div
+                        className={`h-px flex-1 mx-3 mb-5 transition-all duration-500 ${
+                          isDone ? "bg-emerald-500/30" : "bg-slate-800"
+                        }`}
+                      />
                     )}
                   </div>
                 );
@@ -609,10 +556,7 @@ Topic: ${prompt}`;
           </div>
         )}
 
-        {/* ── Terminal + Video ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-          {/* Terminal window */}
           <div className="rounded-2xl border border-slate-800 bg-[#070b11] overflow-hidden">
             <div className="flex items-center gap-1.5 px-4 py-3 border-b border-slate-800/80">
               <span className="w-3 h-3 rounded-full bg-[#ff5f57]" />
@@ -638,7 +582,6 @@ Topic: ${prompt}`;
             </div>
           </div>
 
-          {/* Video output */}
           <div className="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden flex flex-col">
             {videoUrl ? (
               <>
@@ -682,13 +625,11 @@ Topic: ${prompt}`;
               </div>
             )}
           </div>
-
         </div>
 
         <footer className="text-center text-[11px] text-slate-800 pb-2">
-          stuni-web · OpenRouter · Xenova/transformers · FFmpeg.wasm
+          stuni-web · Gemma 4 · Local TTS · FFmpeg.wasm
         </footer>
-
       </div>
     </div>
   );
