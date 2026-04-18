@@ -7,26 +7,38 @@ const TIMEOUT_MS = 120_000;
 
 class JsSandboxManager {
   private iframe: HTMLIFrameElement | null = null;
+  private readyPromise: Promise<void> | null = null;
   private pending = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
   private handlerInstalled = false;
 
   private ensureHandler() {
-    if (this.handlerInstalled || typeof window === "undefined") return;
+    if (this.handlerInstalled || typeof window === "undefined") {
+      return;
+    }
+
     window.addEventListener("message", (event) => {
       const data = event.data as { type?: string; id?: string; payload?: unknown };
-      if (!data?.id || !this.pending.has(data.id)) return;
+      if (!data?.id || !this.pending.has(data.id)) {
+        return;
+      }
+
       const request = this.pending.get(data.id);
-      if (!request) return;
+      if (!request) {
+        return;
+      }
 
       if (data.type === "done") {
         this.pending.delete(data.id);
         request.resolve();
+        return;
       }
+
       if (data.type === "error") {
         this.pending.delete(data.id);
         request.reject(new Error(String(data.payload ?? "Sandbox error")));
       }
     });
+
     this.handlerInstalled = true;
   }
 
@@ -41,13 +53,38 @@ class JsSandboxManager {
       this.iframe = iframe;
       this.ensureHandler();
     }
+
     return this.iframe;
+  }
+
+  private async waitUntilReady(): Promise<void> {
+    const iframe = this.getIframe();
+    const doc = iframe.contentDocument;
+    if (doc && doc.readyState === "complete") {
+      return;
+    }
+
+    if (!this.readyPromise) {
+      this.readyPromise = new Promise<void>((resolve) => {
+        iframe.addEventListener(
+          "load",
+          () => {
+            this.readyPromise = null;
+            resolve();
+          },
+          { once: true },
+        );
+      });
+    }
+
+    await this.readyPromise;
   }
 
   async run(options: RunOptions): Promise<void> {
     this.ensureHandler();
     const iframe = this.getIframe();
     const id = crypto.randomUUID();
+    await this.waitUntilReady();
 
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -66,17 +103,10 @@ class JsSandboxManager {
         },
       });
 
-      const post = () =>
-        iframe.contentWindow?.postMessage(
-          { type: "run", code: options.code, libraries: options.libraries ?? [], id },
-          "*",
-        );
-
-      if (iframe.contentWindow) {
-        post();
-      } else {
-        iframe.addEventListener("load", post, { once: true });
-      }
+      iframe.contentWindow?.postMessage(
+        { type: "run", code: options.code, libraries: options.libraries ?? [], id },
+        "*",
+      );
     });
   }
 }
